@@ -1,0 +1,41 @@
+# ══════════════════════════════════════════════════════
+# Maestro AI Platform - App Configuration
+# ══════════════════════════════════════════════════════
+#
+# 在此注册你的被测应用，之后在 testcases.md 中直接用别名引用。
+#
+# 字段说明:
+#   alias:     应用别名（testcases.md 中用此名称引用，如 @wechat）
+#   app_id:    Android 的 packageId 或 iOS 的 bundleId
+#   platform:  应用运行的平台
+#   name:      应用显示名称（可选，方便阅读用）
+#
+# 使用方式:
+#   maestro-ai generate-batch testcases.md --app-id @wechat
+#   maestro-ai run flows/login.yaml --app-id @taobao
+
+apps:
+  - alias: "@flyu"
+    app_id: "com.flyu.aos"
+    name: "FlyU"
+
+  - alias: "@taobao"
+    app_id: "com.taobao.taobao"
+    platform: android
+    name: "淘宝"
+
+  - alias: "@dingtalk"
+    app_id: "com.alibaba.android.rimet"
+    platform: android
+    name: "钉钉"
+
+  - alias: "@douyin"
+    app_id: "com.ss.android.ugc.aweme"
+    platform: android
+    name: "抖音"
+
+  # ── 添加你的被测 App ──
+  # - alias: "@myapp"
+  #   app_id: "com.yourcompany.yourapp"
+  #   platform: android
+  #   name: "我的App"

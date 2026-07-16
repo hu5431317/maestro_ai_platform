@@ -1,0 +1,66 @@
+# ══════════════════════════════════════════════════════
+# Maestro AI Platform - Device Configuration
+# ══════════════════════════════════════════════════════
+#
+# 在此注册测试设备。testcases.md 或 CLI 中用 name 引用，
+# 系统自动解析为实际的 adb 设备ID（avd/udid）。
+#
+# 字段映射（关键！）:
+#   name  →  testcases.md 中 device 字段引用的名称
+#   avd   →  adb devices 输出的真实设备ID（也叫 serial number）
+#   udid  →  iOS 设备 UDID
+#
+# 示例:
+#   devices.yaml:     name: "oppo A32"    avd: "8073fcda"
+#   testcases.md:     device: "oppo A32"
+#   运行时自动解析为:   --device 8073fcda
+#
+# 字段说明:
+#   - name:     设备别名（testcases.md / CLI 中引用此名称）
+#   - avd:      真实 adb 设备ID（adb devices 查看）
+#   - udid:     iOS 设备 UDID
+#   - platform: android / ios
+#   - default:  是否为默认设备
+
+devices:
+  android:
+    - name: "oppo A32"
+      avd: "8073fcda"
+      platform: android
+      default: true
+
+    - name: "Pixel_7_Emulator"
+      avd: "Pixel_7_API_34"
+      platform: android
+      default: false
+
+  ios:
+    - name: "iPhone_15_Simulator"
+      udid: "auto"  # 自动选择首个可用模拟器
+      platform: ios
+      default: true
+
+    - name: "iPhone_15_Pro_Simulator"
+      udid: ""       # 留空表示不自动选择，需手动指定
+      platform: ios
+      default: false
+
+# ── 全局默认平台 ──
+# 当 CLI 未指定 --platform 参数时使用
+default_platform: android
+
+# ── Maestro 执行超时设置 (毫秒) ──
+# 单个测试用例的最大执行时间
+timeout: 120000
+
+# ── 自愈配置 ──
+healing:
+  enabled: true                    # 是否全局启用自愈
+  similarity_threshold: 0.85       # 模糊匹配相似度阈值（0.0 ~ 1.0）
+  max_alternatives: 3              # 最大备选定位策略数量
+
+# ── 重试配置 ──
+retry:
+  l1_max_retries: 3                # L1: Maestro 原生重试次数
+  l2_max_retries: 2                # L2: 元素自愈重试次数
+  l3_max_retries: 1                # L3: AI 自主修复重试次数

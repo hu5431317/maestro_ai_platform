@@ -1,0 +1,29 @@
+appId: com.flyu.aos
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      text: ".*邮箱.*"
+    timeout: 10000
+- tapOn: "邮箱登录"
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      text: ".*邮箱.*"
+    timeout: 10000
+- tapOn:
+    text: ".*邮箱.*"
+- inputText: "cc123@qq.com"
+- extendedWaitUntil:
+    visible:
+      text: ".*密码.*"
+    timeout: 10000
+- tapOn:
+    text: ".*密码.*"
+- inputText: "123456"
+- tapOn: "登录"
+- extendedWaitUntil:
+    visible:
+      text: ".*退出.*"
+    timeout: 10000
+- assertVisible: ".*退出.*"

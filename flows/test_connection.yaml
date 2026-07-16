@@ -1,0 +1,9 @@
+appId: com.flyu.aos
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      text: "创建"
+    timeout: 10000
+- tapOn:
+    text: "创建"

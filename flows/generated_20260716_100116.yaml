@@ -1,0 +1,14 @@
+appId: com.flyu.aos
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      text: "首页"
+    timeout: 10000
+- tapOn: "个人中心"
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      text: "帮助中心"
+    timeout: 10000
+- assertVisible: "帮助中心"
