@@ -1,0 +1,30 @@
+appId: com.flyu.aos
+---
+# ========== 01: 邮箱登录测试 ==========
+- launchApp
+- extendedWaitUntil:
+    visible:
+      text: "Email Login"
+    timeout: 10000
+- tapOn: "Email Login"
+- waitForAnimationToEnd
+# 输入邮箱
+- tapOn:
+    point: "50%, 44%"
+- inputText: "cc123@qq.com"
+- assertVisible: "cc123@qq.com"
+- assertVisible: "Password"
+# 输入密码：账号输入后软键盘会展开，此时密码框实际可见位置约在 50%,37%
+- tapOn:
+    point: "50%, 37%"
+- inputText: "123456"
+# 点击 Login 按钮：软键盘展开时按钮可见中心约在 50%,46%
+- tapOn:
+    point: "50%, 46%"
+- waitForAnimationToEnd
+# 验证登录成功
+- extendedWaitUntil:
+    visible:
+      text: "Home"
+    timeout: 20000
+- assertVisible: "Home"

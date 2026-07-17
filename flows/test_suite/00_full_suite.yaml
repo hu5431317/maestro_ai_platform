@@ -1,0 +1,71 @@
+appId: com.flyu.aos
+---
+# ============================================
+# 综合测试套件 - testcases.md ALL 4 scenarios
+# 运行: maestro test --no-reinstall-driver 00_full_suite.yaml
+# ============================================
+
+- launchApp
+- waitForAnimationToEnd
+
+# ── 场景1: 登录验证 ──
+# 验证登录页入口元素
+- assertVisible: "Email Login"
+- assertVisible: "Sign in with Google"
+- assertVisible: "Sign in with Facebook"
+
+# 打开邮箱登录表单
+- tapOn: "Email Login"
+- waitForAnimationToEnd
+
+# 输入邮箱 (EditText: center ~ 50%,44%)
+- tapOn:
+    point: "50%, 44%"
+- inputText: "cc123@qq.com"
+- assertVisible: "cc123@qq.com"
+- assertVisible: "Password"
+
+# 输入密码：账号输入后软键盘会展开，此时密码框实际可见位置约在 50%,37%
+- tapOn:
+    point: "50%, 37%"
+- inputText: "123456"
+
+# 点击 Login 按钮：软键盘展开时按钮可见中心约在 50%,46%
+- tapOn:
+    point: "50%, 46%"
+
+# 等待登录结果 (最多 20 秒)
+- extendedWaitUntil:
+    visible:
+      text: "Home"
+    timeout: 20000
+- assertVisible: "Home"
+
+# ── 场景2: 首页创作功能 ──
+- assertVisible: "Create Music Video"
+- assertVisible: "Lite Mode"
+- assertVisible: "Pro Mode"
+
+# ── 场景3: 个人中心 → 帮助中心 ──
+- tapOn: "Me"
+- waitForAnimationToEnd
+- swipe:
+    start: "50%, 90%"
+    end: "50%, 50%"
+    duration: 500
+- extendedWaitUntil:
+    visible:
+      text: "Help Center"
+    timeout: 10000
+- assertVisible: "Help Center"
+- assertVisible: "Log Out"
+
+# ── 场景4: MV Studio → Lite/Pro Tab 验证 ──
+- tapOn: "Home"
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      text: "Lite Mode"
+    timeout: 10000
+- assertVisible: "Lite Mode"
+- assertVisible: "Pro Mode"

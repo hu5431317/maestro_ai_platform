@@ -1,0 +1,13 @@
+appId: com.flyu.aos
+---
+# ========== 02: 首页创作功能测试 ==========
+# 验证: 登录后首页存在创作入口和模式选项
+- launchApp
+- extendedWaitUntil:
+    visible:
+      text: "Home"
+    timeout: 15000
+- assertVisible: "Home"
+- assertVisible: "Create Music Video"
+- assertVisible: "Lite Mode"
+- assertVisible: "Pro Mode"

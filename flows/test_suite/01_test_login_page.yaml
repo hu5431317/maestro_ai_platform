@@ -1,0 +1,42 @@
+appId: com.flyu.aos
+---
+# ============================================
+# 登录页面 UI 验证测试
+# 运行: maestro test --no-reinstall-driver 01_test_login_page.yaml
+# ============================================
+
+- launchApp
+- waitForAnimationToEnd
+
+# 验证启动页面登录入口
+- assertVisible: "Email Login"
+- assertVisible: "Sign in with Google"
+- assertVisible: "Sign in with Facebook"
+
+# 验证邮箱登录表单
+- tapOn: "Email Login"
+- waitForAnimationToEnd
+
+# 输入邮箱 (Email EditText: [88,637][632,749], center ~ 50%,44%)
+- tapOn:
+    point: "50%, 44%"
+- inputText: "cc123@qq.com"
+- assertVisible: "cc123@qq.com"
+- assertVisible: "Password"
+
+# 输入密码：账号输入后软键盘会展开，此时密码框实际可见位置约在 50%,37%
+- tapOn:
+    point: "50%, 37%"
+- inputText: "123456"
+
+# 验证导航到首页（依赖有效凭据）
+- tapOn:
+    point: "50%, 46%"
+- extendedWaitUntil:
+    visible:
+      text: "Home"
+    timeout: 20000
+- assertVisible: "Home"
+- assertVisible: "Create Music Video"
+- assertVisible: "Lite Mode"
+- assertVisible: "Pro Mode"

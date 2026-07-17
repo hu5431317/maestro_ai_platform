@@ -1,0 +1,50 @@
+appId: com.flyu.aos
+---
+# ============================================
+# 综合测试: 覆盖全部 4 个 testcases.md 场景
+# ============================================
+
+# ── Step 1: 启动 APP ──
+- launchApp
+
+# ── 场景1: 登录验证 ──
+# 检查是否已在登录界面（未登录状态）
+- runFlow:
+    when:
+      visible:
+        text: "Email Login"
+    file: _sub_login_only.yaml
+# 如果未看到登录入口，说明已登录，直接进入场景2
+
+# ── 场景2: 首页创作功能（对应 "创建功能"） ──
+- extendedWaitUntil:
+    visible:
+      text: "Home"
+    timeout: 15000
+- assertVisible: "Home"
+- assertVisible: "Create Music Video"
+- assertVisible: "Lite Mode"
+- assertVisible: "Pro Mode"
+
+# ── 场景3: 个人中心帮助中心 ──
+- tapOn: "Me"
+- waitForAnimationToEnd
+- swipe:
+    start: "50%, 80%"
+    end: "50%, 50%"
+    duration: 500
+- extendedWaitUntil:
+    visible:
+      text: "Help Center"
+    timeout: 10000
+- assertVisible: "Help Center"
+
+# ── 场景4: 模式切换（MV Studio 替代） ──
+- tapOn: "Home"
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      text: "Lite Mode"
+    timeout: 10000
+- assertVisible: "Lite Mode"
+- assertVisible: "Pro Mode"

@@ -1,0 +1,21 @@
+appId: com.flyu.aos
+---
+# ========== 03: 个人中心-帮助中心测试 ==========
+# 验证: Me页面存在帮助中心入口
+- launchApp
+- extendedWaitUntil:
+    visible:
+      text: "Home"
+    timeout: 15000
+- tapOn: "Me"
+- waitForAnimationToEnd
+- swipe:
+    start: "50%, 80%"
+    end: "50%, 50%"
+    duration: 500
+- extendedWaitUntil:
+    visible:
+      text: "Help Center"
+    timeout: 10000
+- assertVisible: "Help Center"
+- assertVisible: "Log Out"

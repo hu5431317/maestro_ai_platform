@@ -13,9 +13,11 @@
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import os
+import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -26,6 +28,10 @@ from src.core.healing import ElementHealer
 from src.models.schemas import ExecutionResult, Platform, StepResult, TestStatus
 
 logger = logging.getLogger(__name__)
+
+# ── 默认 ADB 路径 ──
+_DEFAULT_ADB = Path.home() / "adb-platform-tools" / "adb.exe"
+_ADB_PATH = str(_DEFAULT_ADB) if _DEFAULT_ADB.exists() else "adb"
 
 
 # ═══════════════════════════════════════════
@@ -123,6 +129,9 @@ class MaestroCommand:
         """
         # ── 拼接 maestro test 命令 ──
         cmd = [self.maestro_path, "test", str(yaml_path)]
+
+        # --no-reinstall-driver: 禁用驱动自动卸载，保持 dev.mobile.maestro 常驻
+        cmd.append("--no-reinstall-driver")
 
         # --analyze 启用 Maestro 分析模式，输出更详细的步骤执行信息
         if analyze:
@@ -345,6 +354,189 @@ class ErrorParser:
                 if m.lower() not in skip and len(m) > 1:
                     return m
         return None
+
+
+# ═══════════════════════════════════════════
+# Maestro 输出解析器
+# ═══════════════════════════════════════════
+
+class MaestroOutputParser:
+    """
+    解析 Maestro test 的实际执行输出，不依赖 returncode。
+    
+    Maestro 每次运行会在 ~/.maestro/tests/<timestamp>/ 下生成
+    commands-(<yaml>).json，其中包含每个步骤的真实执行状态。
+    通过解析此 JSON 获取可信的执行结果，而非依赖不可靠的 returncode。
+    """
+    
+    @classmethod
+    def find_latest_commands_json(cls, yaml_stem: str, search_root: Path | None = None) -> Path | None:
+        """在 Maestro 测试日志目录中查找最新的 commands JSON 文件。"""
+        if search_root is None:
+            search_root = Path.home() / ".maestro" / "tests"
+        if not search_root.exists():
+            return None
+        
+        candidate = f"commands-({yaml_stem}.yaml).json"
+        # 按修改时间倒序查找所有匹配目录
+        dirs = sorted(
+            [d for d in search_root.iterdir() if d.is_dir()],
+            key=lambda d: d.stat().st_mtime, reverse=True
+        )
+        for d in dirs:
+            jf = d / candidate
+            if jf.exists():
+                return jf
+        return None
+    
+    @classmethod
+    def parse_steps(cls, json_path: Path) -> list[dict]:
+        """从 commands JSON 文件中提取每个步骤的状态、耗时和错误信息。"""
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        
+        commands = data if isinstance(data, list) else data.get("commands", [])
+        if isinstance(commands, dict):
+            commands = list(commands.values())
+        
+        steps = []
+        for cmd in commands:
+            meta = cmd.get("metadata", cmd)
+            status_val = meta.get("status", "UNKNOWN")
+            # 统一状态名
+            if status_val == "COMPLETED":
+                status = "passed"
+            elif status_val in ("FAILED", "SKIPPED"):
+                status = "failed" if status_val == "FAILED" else "skipped"
+            else:
+                status = "unknown"
+            
+            error_info = meta.get("error", {})
+            error_msg = error_info.get("message", "") if isinstance(error_info, dict) else str(error_info)
+            
+            description = ""
+            evaled = meta.get("evaluatedCommand", cmd.get("evaluatedCommand", {}))
+            if evaled:
+                for k in ("tapOnElementCommand", "inputTextCommand", "assertConditionCommand",
+                          "swipeCommand", "launchAppCommand", "hideKeyboardCommand",
+                          "waitForAnimationToEndCommand", "runFlowCommand", "tapOnPointV2Command"):
+                    sub = evaled.get(k, {})
+                    if sub:
+                        if k == "tapOnElementCommand":
+                            sel = sub.get("selector", {})
+                            description = f"Tap on \"{sel.get('textRegex', '')}\""
+                        elif k == "inputTextCommand":
+                            description = f"Input text {sub.get('text', sub.get('inputText', ''))}"
+                        elif k == "assertConditionCommand":
+                            cond = sub.get("condition", {})
+                            vis = cond.get("visible", {})
+                            description = f"Assert that \"{vis.get('textRegex', '')}\" is visible"
+                        elif k == "tapOnPointV2Command":
+                            description = f"Tap on point ({sub.get('point', '')})"
+                        else:
+                            description = k.replace("Command", "")
+                        break
+            
+            steps.append({
+                "status": status,
+                "duration_ms": meta.get("duration", 0),
+                "error": error_msg,
+                "description": description,
+            })
+        return steps
+    
+    @classmethod
+    def get_summary(cls, yaml_stem: str, search_root: Path | None = None) -> dict:
+        """获取测试执行的汇总结果。"""
+        json_path = cls.find_latest_commands_json(yaml_stem, search_root)
+        if json_path is None:
+            return {"passed": 0, "failed": 0, "total": 0, "all_passed": False, "steps": []}
+        
+        steps = cls.parse_steps(json_path)
+        passed = sum(1 for s in steps if s["status"] == "passed")
+        failed = sum(1 for s in steps if s["status"] == "failed")
+        return {
+            "passed": passed,
+            "failed": failed,
+            "total": len(steps),
+            "all_passed": failed == 0 and passed > 0,
+            "steps": steps,
+        }
+
+
+# ═══════════════════════════════════════════
+# 设备工具方法
+# ═══════════════════════════════════════════
+
+def _adb_cmd(*args: str) -> list[str]:
+    """构建 ADB 命令。"""
+    return [_ADB_PATH] + list(args)
+
+
+def ensure_device_connected(device_id: str | None = None) -> bool:
+    """
+    检查 ADB 设备连接状态，断连时尝试重连。
+    
+    Returns:
+        True 表示设备在线且可用
+    """
+    cmd = _adb_cmd("devices")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        lines = result.stdout.strip().split("\n")[1:]  # 跳过 "List of devices attached"
+        online_devices = [l.split("\t")[0] for l in lines if "\tdevice" in l]
+        
+        if not online_devices:
+            logger.warning("未检测到在线设备，尝试重新连接 ADB...")
+            # 尝试 kill-server + start-server
+            subprocess.run(_adb_cmd("kill-server"), capture_output=True, timeout=5)
+            time.sleep(1)
+            subprocess.run(_adb_cmd("start-server"), capture_output=True, timeout=10)
+            time.sleep(2)
+            
+            result2 = subprocess.run(_adb_cmd("devices"), capture_output=True, text=True, timeout=10)
+            lines2 = result2.stdout.strip().split("\n")[1:]
+            online_devices = [l.split("\t")[0] for l in lines2 if "\tdevice" in l]
+        
+        if device_id:
+            return device_id in online_devices
+        return len(online_devices) > 0
+    except Exception as e:
+        logger.error(f"ADB 设备检查异常: {e}")
+        return False
+
+
+def capture_screenshot(save_dir: Path, label: str) -> Path | None:
+    """
+    通过 ADB 捕获当前设备屏幕截图并保存。
+    
+    Args:
+        save_dir: 截图保存目录
+        label:   截图标签（用于文件名，如 "login_failed_L1_1"）
+        
+    Returns:
+        截图文件路径，失败返回 None
+    """
+    save_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"screenshot_{label}_{datetime.now().strftime('%H%M%S')}.png"
+    filepath = save_dir / filename
+    
+    try:
+        # ADB screencap → stdout → 本地文件
+        result = subprocess.run(
+            _adb_cmd("exec-out", "screencap", "-p"),
+            capture_output=True,
+            timeout=15,
+        )
+        if result.returncode == 0 and result.stdout:
+            filepath.write_bytes(result.stdout)
+            logger.info(f"截图已保存: {filepath}")
+            return filepath
+    except Exception as e:
+        logger.error(f"截图失败: {e}")
+    return None
 
 
 # ═══════════════════════════════════════════
@@ -583,6 +775,11 @@ class MaestroOrchestrator:
         """
         执行一个 YAML 测试用例，支持自动重试和自愈。
 
+        改进点：
+        - 执行前检查设备连接，断连时自动重连
+        - 解析 Maestro commands JSON 获取真实步骤级执行状态
+        - 失败时自动捕获并保存屏幕截图
+
         完整执行流程参见类文档中的流程图。
 
         Args:
@@ -598,82 +795,150 @@ class MaestroOrchestrator:
             - duration_ms: 总耗时（毫秒）
             - raw_maestro_log: Maestro 完整输出日志
             - healed_steps: 被自愈修复的步骤数
+            - step_results: 每个步骤的详细结果
+            - screenshots: 失败截图路径列表
         """
         # ── 记录测试开始时间，用于计算总耗时 ──
         start_time = datetime.now()
+        test_name = yaml_path.stem
+
+        # ── 创建本次执行的截图目录 ──
+        screenshots_dir = Path("reports") / "screenshots" / f"{test_name}_{start_time.strftime('%Y%m%d_%H%M%S')}"
+        screenshots: list[str] = []
 
         # ── 构建初始结果对象，默认状态为 FAILED ──
-        # 后续各层成功后会将 status 更新为 PASSED 或 HEALED
         result = ExecutionResult(
-            test_name=yaml_path.stem,       # 测试名称 = YAML 文件名（不含后缀）
+            test_name=test_name,
             platform=Platform(platform),
             device_id=device_id,
-            status=TestStatus.FAILED,       # 初始假设失败，成功后覆盖
+            status=TestStatus.FAILED,
             start_time=start_time,
             yaml_path=yaml_path,
         )
 
+        # ── 执行前设备连接检查 ──
+        if not ensure_device_connected(device_id):
+            logger.error("设备未连接，无法执行测试")
+            result.status = TestStatus.ERROR
+            result.end_time = datetime.now()
+            result.duration_ms = (result.end_time - start_time).total_seconds() * 1000
+            result.raw_maestro_log = "错误: 设备未连接"
+            return result
+
         # ═══════════════════════════════════════════
         # L1: Maestro 原生重试
         # ═══════════════════════════════════════════
-        # 策略：直接重新执行同一个 YAML 文件，不做任何修改。
-        # 适用于网络波动、设备瞬时繁忙等临时性问题。
-        # 每次重试都会捕获完整的 stdout + stderr 存入 result.raw_maestro_log。
+        l1_passed = False
         for attempt in range(1, max_retries + 1):
             logger.info(f"[L1 尝试 {attempt}/{max_retries}] 执行: {yaml_path.name}")
+
+            # 每次重试前检查设备连接
+            if not ensure_device_connected(device_id):
+                logger.warning(f"[L1] 设备断连，尝试重连...")
+                time.sleep(2)
+                if not ensure_device_connected(device_id):
+                    logger.error(f"[L1] 设备重连失败，跳过本次重试")
+                    continue
+
             proc = self.maestro.run_test(
                 yaml_path=yaml_path,
                 device_id=device_id,
                 platform=platform,
-                analyze=True,  # 启用分析模式以获取详细日志
+                analyze=True,
             )
 
-            # 保存原始日志供后续 L2/L3 分析使用
+            # 保存原始日志供后续分析
             result.raw_maestro_log = proc.stdout + "\n" + proc.stderr
 
-            if proc.returncode == 0:
-                # 测试通过！更新状态和时间，直接返回
+            # ── 解析 Maestro 真实输出而非仅依赖 returncode ──
+            summary = MaestroOutputParser.get_summary(test_name)
+
+            if summary["all_passed"]:
+                # 所有步骤均通过 → 真正成功
                 result.status = TestStatus.PASSED
                 result.end_time = datetime.now()
                 result.duration_ms = (result.end_time - start_time).total_seconds() * 1000
-                logger.info(f"测试通过: {yaml_path.name}")
+                result.total_steps = summary["total"]
+                result.passed_steps = summary["passed"]
+                result.failed_steps = summary["failed"]
+                result.step_results = [
+                    StepResult(
+                        step_index=i + 1,
+                        action=s.get("description", f"step-{i+1}"),
+                        status=TestStatus.PASSED if s["status"] == "passed" else TestStatus.FAILED,
+                        duration_ms=s.get("duration_ms", 0),
+                        error_message=s.get("error") if s["status"] == "failed" else None,
+                    )
+                    for i, s in enumerate(summary["steps"])
+                ]
+                logger.info(f"测试通过: {yaml_path.name} ({summary['passed']}/{summary['total']} steps)")
                 return result
 
-            logger.warning(f"[L1 尝试 {attempt}] 失败 (exit={proc.returncode})")
+            # 失败时自动截图
+            if summary["failed"] > 0:
+                ss = capture_screenshot(screenshots_dir, f"{test_name}_L1_{attempt}")
+                if ss:
+                    screenshots.append(str(ss))
+                logger.warning(
+                    f"[L1 尝试 {attempt}] 失败 "
+                    f"(passed={summary['passed']}, failed={summary['failed']}, "
+                    f"exit={proc.returncode})"
+                )
+            elif proc.returncode != 0:
+                # JSON 无法解析但 returncode != 0（异常情况）
+                ss = capture_screenshot(screenshots_dir, f"{test_name}_L1_{attempt}_rc{proc.returncode}")
+                if ss:
+                    screenshots.append(str(ss))
+                logger.warning(f"[L1 尝试 {attempt}] 异常退出 (exit={proc.returncode})")
+            else:
+                l1_passed = True
+                break
+
+        # ── 如果 L1 中某次 returncode==0 且解析无失败步骤，直接返回 ──
+        if l1_passed:
+            summary = MaestroOutputParser.get_summary(test_name)
+            result.status = TestStatus.PASSED if summary["all_passed"] else TestStatus.FAILED
+            result.end_time = datetime.now()
+            result.duration_ms = (result.end_time - start_time).total_seconds() * 1000
+            result.total_steps = summary["total"]
+            result.passed_steps = summary["passed"]
+            result.failed_steps = summary["failed"]
+            result.step_results = [
+                StepResult(
+                    step_index=i + 1,
+                    action=s.get("description", f"step-{i+1}"),
+                    status=TestStatus.PASSED if s["status"] == "passed" else TestStatus.FAILED,
+                    duration_ms=s.get("duration_ms", 0),
+                    error_message=s.get("error") if s["status"] == "failed" else None,
+                )
+                for i, s in enumerate(summary["steps"])
+            ]
+            return result
 
         # ═══════════════════════════════════════════
         # L2: 自愈重试（元素级智能修复）
         # ═══════════════════════════════════════════
-        # 触发条件：
-        #   1. heal=True（用户启用了自愈功能）
-        #   2. ErrorParser 识别出错误类型为「元素未找到」
-        #
-        # 自愈流程：
-        #   ① 从 stderr 中提取失败的定位器文本（如 "登录按钮"）
-        #   ② 通过 adb 获取当前屏幕的 UI 层级树 XML
-        #   ③ 从错误日志构建元素指纹（包含文本、ID、位置等特征）
-        #   ④ 调用 ElementHealer.heal() 在 UI 树中模糊匹配相似元素
-        #      - 如果找到相似度足够高的替代元素，原地修改 YAML 中的定位器
-        #      - 返回 {"healed": True/False, ...}
-        #   ⑤ 如果自愈成功，用修改后的 YAML 重新执行测试
         if heal and ErrorParser.is_element_not_found(result.raw_maestro_log or ""):
             for attempt in range(1, self.l2_max_retries + 1):
                 logger.info(f"[L2 自愈尝试 {attempt}/{self.l2_max_retries}]")
 
-                # 步骤①：从错误日志中提取失败的具体定位器
+                # 设备连接检查
+                if not ensure_device_connected(device_id):
+                    ss = capture_screenshot(screenshots_dir, f"{test_name}_L2_{attempt}_disconnected")
+                    if ss:
+                        screenshots.append(str(ss))
+                    continue
+
                 failed_locator = ErrorParser.extract_failed_locator(
                     result.raw_maestro_log or ""
                 )
 
                 if failed_locator:
-                    # 步骤②：获取当前屏幕的 UI 层级树
                     xml_content = self.maestro.get_ui_hierarchy(device_id)
                     if xml_content:
-                        # 步骤③：构建元素指纹（用于模糊匹配）
                         fingerprint = self.healer.build_fingerprint_from_error(
                             result.raw_maestro_log or ""
                         )
-                        # 步骤④：执行自愈 — 在 UI 树中搜索替代元素并更新 YAML
                         heal_result = self.healer.heal(
                             fingerprint=fingerprint,
                             xml_content=xml_content,
@@ -682,7 +947,6 @@ class MaestroOrchestrator:
                         )
 
                         if heal_result["healed"]:
-                            # 步骤⑤：自愈成功，用原地修改后的 YAML 重新执行
                             logger.info(f"[L2] 自愈成功，重跑测试")
                             proc = self.maestro.run_test(
                                 yaml_path=yaml_path,
@@ -690,38 +954,53 @@ class MaestroOrchestrator:
                                 platform=platform,
                                 analyze=True,
                             )
-                            if proc.returncode == 0:
-                                # 自愈后测试通过，状态标记为 HEALED
+                            summary = MaestroOutputParser.get_summary(test_name)
+                            if summary["all_passed"]:
                                 result.status = TestStatus.HEALED
                                 result.healed_steps = 1
                                 result.end_time = datetime.now()
-                                result.duration_ms = (
-                                    result.end_time - start_time
-                                ).total_seconds() * 1000
+                                result.duration_ms = (result.end_time - start_time).total_seconds() * 1000
+                                result.total_steps = summary["total"]
+                                result.passed_steps = summary["passed"]
+                                result.failed_steps = summary["failed"]
+                                result.step_results = [
+                                    StepResult(
+                                        step_index=i + 1,
+                                        action=s.get("description", f"step-{i+1}"),
+                                        status=TestStatus.PASSED if s["status"] == "passed" else TestStatus.FAILED,
+                                        duration_ms=s.get("duration_ms", 0),
+                                        error_message=s.get("error") if s["status"] == "failed" else None,
+                                        healed_locator=heal_result.get("new_locator"),
+                                    )
+                                    for i, s in enumerate(summary["steps"])
+                                ]
                                 logger.info(f"自愈后测试通过: {yaml_path.name}")
                                 return result
+                            else:
+                                ss = capture_screenshot(screenshots_dir, f"{test_name}_L2_{attempt}_failed")
+                                if ss:
+                                    screenshots.append(str(ss))
+                        else:
+                            ss = capture_screenshot(screenshots_dir, f"{test_name}_L2_{attempt}_no_heal")
+                            if ss:
+                                screenshots.append(str(ss))
 
         # ═══════════════════════════════════════════
         # L3: AI 自主修复（LLM 重写 YAML）
         # ═══════════════════════════════════════════
-        # 触发条件：
-        #   1. l3_enabled=True 且 ai_fixer 初始化成功
-        #   2. L1 和 L2 均已失败
-        #
-        # AI 修复流程：
-        #   ① 将错误日志（截断到 5000 字符）+ 原始 YAML 发送给 LLM
-        #   ② LLM 分析失败原因，生成修复后的完整 YAML
-        #   ③ 清理 LLM 输出，保存为 <原名>_ai_fixed.yaml
-        #   ④ 用新生成的 YAML 执行测试
         if self.l3_enabled and self.ai_fixer:
             logger.info("[L3] 启动 AI 自主修复")
+
+            ss = capture_screenshot(screenshots_dir, f"{test_name}_L3_pre_fix")
+            if ss:
+                screenshots.append(str(ss))
+
             fixed_yaml = self.ai_fixer.fix(
-                error_log=(result.raw_maestro_log or "")[-5000:],  # 截断日志避免超 token 限制
+                error_log=(result.raw_maestro_log or "")[-5000:],
                 yaml_path=yaml_path,
             )
 
             if fixed_yaml:
-                # AI 成功生成了修复版 YAML，使用它重新执行测试
                 logger.info(f"[L3] AI 修复完成，执行修复后的用例: {fixed_yaml.name}")
                 proc = self.maestro.run_test(
                     yaml_path=fixed_yaml,
@@ -729,23 +1008,52 @@ class MaestroOrchestrator:
                     platform=platform,
                     analyze=True,
                 )
-                if proc.returncode == 0:
-                    # AI 修复后测试通过，状态标记为 HEALED
+                summary = MaestroOutputParser.get_summary(fixed_yaml.stem)
+                if summary["all_passed"]:
                     result.status = TestStatus.HEALED
                     result.end_time = datetime.now()
-                    result.duration_ms = (
-                        result.end_time - start_time
-                    ).total_seconds() * 1000
+                    result.duration_ms = (result.end_time - start_time).total_seconds() * 1000
+                    result.total_steps = summary["total"]
+                    result.passed_steps = summary["passed"]
+                    result.failed_steps = summary["failed"]
                     logger.info(f"AI 修复后测试通过")
                     return result
+                else:
+                    ss = capture_screenshot(screenshots_dir, f"{test_name}_L3_failed")
+                    if ss:
+                        screenshots.append(str(ss))
 
         # ═══════════════════════════════════════════
-        # 三层恢复全部失败 — 最终标记为 FAILED
+        # 三层恢复全部失败 — 最终截图 + 标记为 FAILED
         # ═══════════════════════════════════════════
+        final_ss = capture_screenshot(screenshots_dir, f"{test_name}_FINAL_FAIL")
+        if final_ss:
+            screenshots.append(str(final_ss))
+
+        # 填充最终步骤结果
+        final_summary = MaestroOutputParser.get_summary(test_name)
         result.status = TestStatus.FAILED
         result.end_time = datetime.now()
         result.duration_ms = (result.end_time - start_time).total_seconds() * 1000
-        logger.error(f"测试最终失败: {yaml_path.name} (L1+L2+L3 均未恢复)")
+        result.total_steps = final_summary["total"]
+        result.passed_steps = final_summary["passed"]
+        result.failed_steps = final_summary["failed"]
+        result.step_results = [
+            StepResult(
+                step_index=i + 1,
+                action=s.get("description", f"step-{i+1}"),
+                status=TestStatus.PASSED if s["status"] == "passed" else TestStatus.FAILED,
+                duration_ms=s.get("duration_ms", 0),
+                error_message=s.get("error") if s["status"] == "failed" else None,
+                screenshot_path=screenshots[-1] if screenshots and s["status"] == "failed" else None,
+            )
+            for i, s in enumerate(final_summary["steps"])
+        ]
+        # 将截图列表附加到日志中（Pydantic 模型可能不支持，用 raw_log 传递）
+        logger.error(
+            f"测试最终失败: {yaml_path.name} "
+            f"(L1+L2+L3 均未恢复, 截图: {len(screenshots)} 张)"
+        )
         return result
 
     def run_multiple(

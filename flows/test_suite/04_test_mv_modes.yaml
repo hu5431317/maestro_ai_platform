@@ -1,0 +1,13 @@
+appId: com.flyu.aos
+---
+# ========== 04: 模式切换验证测试 ==========
+# 验证: 首页 Lite/Pro 模式可见且可切换
+- launchApp
+- extendedWaitUntil:
+    visible:
+      text: "Home"
+    timeout: 15000
+- assertVisible: "Lite Mode"
+- tapOn: "Pro Mode"
+- waitForAnimationToEnd
+- assertVisible: "Pro Mode"

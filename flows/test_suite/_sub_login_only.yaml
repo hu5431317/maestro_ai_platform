@@ -1,0 +1,19 @@
+appId: com.flyu.aos
+---
+# 子流程: 仅执行登录
+- tapOn: "Email Login"
+- waitForAnimationToEnd
+- tapOn:
+    point: "50%, 44%"
+- inputText: "cc123@qq.com"
+- assertVisible: "cc123@qq.com"
+- assertVisible: "Password"
+- tapOn:
+    point: "50%, 37%"
+- inputText: "123456"
+- tapOn:
+    point: "50%, 46%"
+- extendedWaitUntil:
+    visible:
+      text: "Home"
+    timeout: 20000
